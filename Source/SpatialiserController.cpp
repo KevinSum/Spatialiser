@@ -1,6 +1,7 @@
 #include "SpatialiserController.h"
 
 const int RESAMPLED_HRTF_ANGLE_INTERVAL = 5;
+const float HRTF_REL_ONSET_THRESHOLD = 0.31f;
 
 struct DistMapping
 {
@@ -91,6 +92,38 @@ void SpatialiserController::loadHRTFData(sofa::GeneralFIR& file)
         fRawIRs[idx] = static_cast<float>(dRawIRs[idx]);
     }
 
+    // Calculate ITDs for raw IRs
+    std::unique_ptr<float[]> rawITDs(new float[numMeasurements * numReceivers]);
+    for (int measurementIdx = 0; measurementIdx < numMeasurements * numReceivers; ++measurementIdx)
+    {
+        float* IR = &fRawIRs[measurementIdx * m_IRNumSamples];
+
+        // Find peak val
+        float peakVal = 0;
+        for (int idx = 0; idx < m_IRNumSamples; ++idx)
+        {
+            if (IR[idx] > peakVal)
+            {
+                peakVal = IR[idx];
+            }
+        }
+
+        // Calculate IR onset threshold
+        float onsetThreshold = HRTF_REL_ONSET_THRESHOLD * peakVal;
+        for (int sampleIdx = 0; sampleIdx < m_IRNumSamples; ++sampleIdx)
+        {
+            if (fRawIRs[sampleIdx] > onsetThreshold)
+            {
+                rawITDs[measurementIdx] = sampleIdx;
+                break;
+            }
+            if(sampleIdx == m_IRNumSamples - 1)   
+            {
+                // Never hit threshold? Throw error
+            }
+        }
+    }
+
     std::vector<DistMapping> distMappingList;
 
     // Interpolate HRTFs in 5 deg intervals
@@ -130,9 +163,11 @@ void SpatialiserController::loadHRTFData(sofa::GeneralFIR& file)
             // Sort mapping by distances
             std::sort(distMappingList.begin(), distMappingList.end(), compareDist);
 
-            // Get target HRTF from interpolation
+            // Get target HRTF and ITD from interpolation
             std::shared_ptr<float[]> interpolatedLeftIR(new float[m_IRNumSamples]);
             std::shared_ptr<float[]> interpolatedRightIR(new float[m_IRNumSamples]);
+            float interpolatedLeftITD = 0.0f;
+            float interpolatedRightITD = 0.0f;
 
             if (juce::approximatelyEqual(distMappingList[0].m_distance, (double)0.0))
             {
@@ -142,19 +177,26 @@ void SpatialiserController::loadHRTFData(sofa::GeneralFIR& file)
 
                 std::memcpy(interpolatedLeftIR.get(), leftIR, m_IRNumSamples * sizeof(float));
                 std::memcpy(interpolatedRightIR.get(), rightIR, m_IRNumSamples * sizeof(float));
+
+                interpolatedLeftITD = rawITDs[distMappingList[0].m_measurementIdx * numReceivers];
+                interpolatedRightITD = rawITDs[distMappingList[0].m_measurementIdx * numReceivers + 1];
             }
             else
             {
                 // Barycentric interpolate the IR between 3 closest measurements
-                float* leftIR1 = &fRawIRs[distMappingList[0].m_measurementIdx * m_IRNumSamples * numReceivers];
-                float* rightIR1 = &fRawIRs[(distMappingList[0].m_measurementIdx * m_IRNumSamples * numReceivers) + m_IRNumSamples];
                 float aziRad1 = distMappingList[0].m_aziRad;
                 float eleRad1 = distMappingList[0].m_eleRad;
+                float* leftIR1 = &fRawIRs[distMappingList[0].m_measurementIdx * m_IRNumSamples * numReceivers];
+                float* rightIR1 = &fRawIRs[(distMappingList[0].m_measurementIdx * m_IRNumSamples * numReceivers) + m_IRNumSamples];
+                float leftITD1 = rawITDs[distMappingList[0].m_measurementIdx * numReceivers];
+                float rightITD1 = rawITDs[distMappingList[0].m_measurementIdx * numReceivers + 1];
 
-                float* leftIR2 = &fRawIRs[distMappingList[1].m_measurementIdx * m_IRNumSamples * numReceivers];
-                float* rightIR2 = &fRawIRs[(distMappingList[1].m_measurementIdx * m_IRNumSamples * numReceivers) + m_IRNumSamples];
                 float aziRad2 = distMappingList[1].m_aziRad;
                 float eleRad2 = distMappingList[1].m_eleRad;
+                float* leftIR2 = &fRawIRs[distMappingList[1].m_measurementIdx * m_IRNumSamples * numReceivers];
+                float* rightIR2 = &fRawIRs[(distMappingList[1].m_measurementIdx * m_IRNumSamples * numReceivers) + m_IRNumSamples];
+                float leftITD2 = rawITDs[distMappingList[1].m_measurementIdx * numReceivers];
+                float rightITD2 = rawITDs[distMappingList[1].m_measurementIdx * numReceivers + 1];
 
                 int IR3Idx = 2;
                 while (checkIfOnSamePlane(distMappingList[0].m_aziRad, distMappingList[0].m_eleRad,
@@ -170,10 +212,12 @@ void SpatialiserController::loadHRTFData(sofa::GeneralFIR& file)
                     }
                 }
 
-                float* leftIR3 = &fRawIRs[distMappingList[IR3Idx].m_measurementIdx * m_IRNumSamples * numReceivers];
-                float* rightIR3 = &fRawIRs[(distMappingList[IR3Idx].m_measurementIdx * m_IRNumSamples * numReceivers) + m_IRNumSamples];
                 float aziRad3 = distMappingList[IR3Idx].m_aziRad;
                 float eleRad3 = distMappingList[IR3Idx].m_eleRad;
+                float* leftIR3 = &fRawIRs[distMappingList[IR3Idx].m_measurementIdx * m_IRNumSamples * numReceivers];
+                float* rightIR3 = &fRawIRs[(distMappingList[IR3Idx].m_measurementIdx * m_IRNumSamples * numReceivers) + m_IRNumSamples];
+                float leftITD3 = rawITDs[distMappingList[IR3Idx].m_measurementIdx * numReceivers];
+                float rightITD3 = rawITDs[distMappingList[IR3Idx].m_measurementIdx * numReceivers + 1];
 
                 float a = ((aziRad2 - aziRad3) * (tarEleRad - eleRad3) + (eleRad3 - eleRad2) * (tarAziRad - aziRad3))
                     / ((aziRad2 - aziRad3) * (eleRad1 - eleRad3) + (eleRad3 - eleRad2) * (aziRad1 - aziRad3));
@@ -186,6 +230,8 @@ void SpatialiserController::loadHRTFData(sofa::GeneralFIR& file)
                     interpolatedLeftIR[i] = a * leftIR1[i] + b * leftIR2[i] + c * leftIR3[i];
                     interpolatedRightIR[i] = a * rightIR1[i] + b * rightIR2[i] + c * rightIR3[i];
                 }
+                interpolatedLeftITD = a * leftITD1 + b * leftITD2 + c * leftITD3;
+                interpolatedRightITD = a * rightITD1 + b * rightITD2 + c * rightITD3;
             }
 
             IRMapping irMapping;
@@ -193,6 +239,8 @@ void SpatialiserController::loadHRTFData(sofa::GeneralFIR& file)
             irMapping.m_ele = tarEle;
             irMapping.m_leftIR = interpolatedLeftIR;
             irMapping.m_rightIR = interpolatedRightIR;
+            irMapping.m_leftITD = interpolatedLeftITD;
+            irMapping.m_rightITD = interpolatedRightITD;
             m_IRMappingCollection.push_back(irMapping);
         }
     }

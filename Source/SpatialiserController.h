@@ -27,6 +27,8 @@ private:
 	{
 		double m_azi;
 		double m_ele;
+		float m_leftITD;
+		float m_rightITD;
 		std::shared_ptr<float[]> m_leftIR;
 		std::shared_ptr<float[]> m_rightIR;
 	};

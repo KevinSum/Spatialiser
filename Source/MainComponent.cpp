@@ -73,6 +73,7 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
     }
 
     m_audioFileController.getNextAudioBlock(bufferToFill);
+    m_spatialiserController.spatialise(bufferToFill, 0, 0);
 }
 
 void MainComponent::releaseResources()
